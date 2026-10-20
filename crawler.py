@@ -182,12 +182,29 @@ def internal_links(html):
 INFO_RE = re.compile(
     r"Anime Series Info:\s*📰\s*Full Name:\s*(?P<name>[^\n]+?)\s*"
     r"🍂\s*Season:\s*(?P<season>\S+)\s*"
+    r"(?:⏳\s*RunTime:\s*(?P<runtime>[^\n]+?)\s*)?"
     r"🎞\s*Episodes:\s*(?P<episodes>[^\n]+?)\s*"
     r"🌐\s*Network:\s*(?P<network>[^\n]+?)\s*"
     r"Year:\s*(?P<year>[^\n]+?)\s*"
     r"🔊\s*Language:\s*(?P<language>[^\n]+?)\s*"
-    r"🎬\s*Quality:\s*(?P<quality>[^\n]+?)\s*(?:Synopsis|Watch-Download)",
+    r"(?:💝\s*Genre:\s*(?P<genre>[^\n]+?)\s*)?"
+    r"(?:⭐\s*Rating:\s*(?P<rating>[^\n]+?)\s*)?"
+    r"🎬\s*Quality:\s*(?P<quality>[^\n]+?)\s*"
+    r"(?:Synopsis:\s*(?P<synopsis>.+?)(?:Watch-Download|Watch &|$))?",
     re.S)
+
+# INFO_RE above is one long chained match (name -> season -> runtime? ->
+# episodes -> network -> year -> language -> genre? -> rating? -> quality
+# -> synopsis?). If ANY of the earlier mandatory fields fails to match a
+# given page's exact formatting, the WHOLE match fails and genre +
+# synopsis are lost too, even though those two are present and fine on
+# their own. Pull them independently as a fallback so one broken field
+# upstream doesn't cost us both.
+GENRE_RE = re.compile(
+    r"💝\s*Genre:\s*(?P<genre>[^\n]+?)\s*"
+    r"(?=⭐|🎬|Synopsis:|Watch[- ](?:Download|&)|$)", re.S)
+SYNOPSIS_RE = re.compile(
+    r"Synopsis:\s*(?P<synopsis>.+?)(?:Watch[- ](?:Download|&)|$)", re.S)
 
 
 def parse_hub_page(url, html):
@@ -199,9 +216,18 @@ def parse_hub_page(url, html):
     content = soup.find("div", class_=lambda c: c and "entry-content" in c)
     info = {}
     if content:
-        m = INFO_RE.search(content.get_text(" ", strip=True))
+        text = content.get_text(" ", strip=True)
+        m = INFO_RE.search(text)
         if m:
             info = m.groupdict()
+        if not info.get("genre"):
+            gm = GENRE_RE.search(text)
+            if gm:
+                info["genre"] = gm.group("genre")
+        if not info.get("synopsis"):
+            sm = SYNOPSIS_RE.search(text)
+            if sm:
+                info["synopsis"] = sm.group("synopsis")
 
     watch_pages, streams, vimeo = [], [], []
     vimeo_ids = re.findall(r"player\.vimeo\.com/video/(\d+)", html)

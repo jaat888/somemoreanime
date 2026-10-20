@@ -210,7 +210,7 @@ async function showPage(slug){killPlayer();const s=bySlug(slug);if(!s)return go(
     if(!vids.length)kids.push(h("p",{class:"muted"},"No episodes found."))}
   $app.replaceChildren(...kids);
   if(ME)api("/api/seen/"+slug).then(r=>r.seen.forEach(k=>{const b=$app.querySelector('[data-k="'+k+'"]');if(b)b.classList.add("seen")})).catch(()=>{});
-  api("/api/awi-match/"+slug).then(r=>{
+  api("/api/genre-desc/"+slug).then(r=>{
     if(!r.ok||location.hash.replace(/^#\/?/,"")!=="show/"+slug)return;
     const extra=[];
     if((r.genres||[]).length)extra.push(h("div",{class:"row2",style:"margin-top:10px"},...r.genres.map(g=>h("span",{class:"tag"},g))));

@@ -116,8 +116,22 @@ def run(feed_pages=12, quiet=False):
             m2 = P.SEASON_RE.search(rec.get("title", ""))
             if m2:
                 season_hint = int(m2.group(1))
-        new_rows.extend(P.parse_html(html, rec["url"], rec.get("title", ""),
-                                      season_hint))
+        hub_rows = P.parse_html(html, rec["url"], rec.get("title", ""),
+                                 season_hint)
+        if hub_rows:
+            # genre/synopsis are per-show, not per-episode - stash them on
+            # just the first row for this hub so addon.py can pick them up
+            # when it builds SHOWS, without duplicating the text across
+            # every episode row.
+            genres = [g.strip() for g in
+                      re.split(r"[,،]", info.get("genre") or "") if g.strip()]
+            synopsis = re.sub(r"\s+", " ", re.sub(
+                r"<[^>]+>", "", info.get("synopsis") or "")).strip()
+            if genres:
+                hub_rows[0]["genres"] = genres
+            if synopsis:
+                hub_rows[0]["synopsis"] = synopsis
+        new_rows.extend(hub_rows)
         for w in rec.get("watch_pages", []):
             shtml, _ = C.fetch(w)
             if shtml is None:

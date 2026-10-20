@@ -57,7 +57,6 @@ import urllib.request
 from urllib.parse import urlparse, parse_qs, unquote, urljoin
 
 import accounts
-import awi
 import requests
 from curl_cffi import requests as creq
 
@@ -133,6 +132,15 @@ try:
 except Exception:
     pass
 
+# meta_cache.json — ek baar build_meta_cache.py chalao, yeh file banti hai
+# Startup pe load, har request pe zero network call
+META_CACHE = {}
+try:
+    with open(os.path.join(BASE_DIR, "meta_cache.json"), encoding="utf-8") as fh:
+        META_CACHE = json.load(fh)
+except Exception:
+    pass
+
 
 def _display(show):
     """Human hub name; Subbed/Dubbed variants must stay distinct."""
@@ -159,6 +167,13 @@ def _build_shows():
                    "hub": r.get("hub_url") or "",
                    "poster": POSTERS.get(show, ""), "movie": None, "eps": {}}
             SHOWS[slug] = rec
+        # genre/synopsis are stashed on whichever row the crawler attached
+        # them to (refresh_index.py puts them on one row per hub) - pick
+        # them up the first time we see them for this show.
+        if not rec.get("genres") and r.get("genres"):
+            rec["genres"] = r["genres"]
+        if not rec.get("synopsis") and r.get("synopsis"):
+            rec["synopsis"] = r["synopsis"]
         try:
             s, e = int(r.get("season") or 0), int(r.get("episode") or 0)
         except (TypeError, ValueError):
@@ -677,6 +692,22 @@ def _live_rows(rec):
                              "lang": lang or _dl, "hub_url": hub,
                              "mq": mm.group(1), "sb": "",
                              "btn": "watchnow"})
+        # Genre aur Synopsis bhi extract karo hub page se
+        if page and not rec.get("genres"):
+            _GENRE_RE = re.compile(
+                r"(?:💝|Genre:)\s*Genre:\s*(?P<genre>[^\n<]+)", re.I)
+            _SYN_RE = re.compile(
+                r"Synopsis:\s*(?P<synopsis>.+?)(?:Watch[- ](?:Download|&)|$)",
+                re.S | re.I)
+            gm = _GENRE_RE.search(page)
+            if gm:
+                rec["genres"] = [g.strip() for g in
+                                 re.split(r"[,،]", gm.group("genre")) if g.strip()]
+            sm = _SYN_RE.search(page)
+            if sm:
+                rec["synopsis"] = re.sub(r"\s+", " ",
+                                         re.sub(r"<[^>]+>", "", sm.group("synopsis"))
+                                         ).strip()
     except Exception:
         rows = []
     with _live_lock:
@@ -1136,46 +1167,14 @@ def _lang_label(raw):
 _public_base_holder = {}
 
 
-def _awi_fetch(url, referer=None):
-    """HTML text of an AnimeWorld page, "" on any failure."""
-    try:
-        r = upstream_get(url, referer=referer or awi.BASE + "/", timeout=15)
-        return r.text if r.status_code == 200 else ""
-    except Exception:
-        return ""
-
-
-awi.fetch = _awi_fetch
-
-
 def _catalogs():
-    genre = {"name": "genre", "options": awi.GENRES}
     skip = {"name": "skip"}
     out = []
     for t in ("series", "movie"):
         out.append({"type": t, "id": "rt_latest",
                     "name": "RareToons · Recently Updated",
                     "extra": [{"name": "genre", "options": ["Anime", "Cartoon"]}, skip]})
-    out.append({"type": "series", "id": "awi_new",
-                "name": "AnimeWorld · Newest Drops", "extra": []})
-    for t in ("series", "movie"):
-        out.append({"type": t, "id": "awi_popular",
-                    "name": "AnimeWorld · Most Watched", "extra": []})
-    for t in ("series", "movie"):
-        out.append({"type": t, "id": "awi_browse",
-                    "name": "AnimeWorld · Browse by Genre",
-                    "extra": [genre, {"name": "search"}, skip]})
     return out
-
-
-def _awi_preview(c):
-    info = " · ".join(x for x in (c.get("season"), c.get("eps")) if x)
-    m = {"id": f"awi:{c['type']}:{c['slug']}", "type": c["type"],
-         "name": c["title"], "poster": c.get("poster") or None,
-         "posterShape": "poster"}
-    if info:
-        m["releaseInfo"] = info
-    return m
 
 
 def _rt_catalog(ctype, genre, skip):
@@ -1206,48 +1205,9 @@ def handle_catalog(ctype, cid, extra):
         skip = int((extra.get("skip") or ["0"])[0])
     except ValueError:
         skip = 0
-    query = (extra.get("search") or [""])[0]
     if cid == "rt_latest":
         return {"metas": _rt_catalog(ctype, genre, skip)}
-    if cid == "awi_new" and ctype == "series":
-        items = awi.home().get("newest", [])
-    elif cid == "awi_popular":
-        items = awi.home().get("popular_series" if ctype == "series"
-                               else "popular_movies", [])
-    elif cid == "awi_browse":
-        items = (awi.search(query, ctype) if query
-                 else awi.browse(ctype, genre or None, skip))
-    else:
-        items = []
-    return {"metas": [_awi_preview(c) for c in items]}
-
-
-def _awi_meta(mtype, mid):
-    parts = mid.split(":")
-    if len(parts) < 3:
-        return None
-    kind, slug = parts[1], parts[2]
-    d = awi.details(kind, slug)
-    if not d:
-        return None
-    meta = {"id": f"awi:{kind}:{slug}", "type": kind, "name": d["title"],
-            "poster": d.get("poster") or None,
-            "background": d.get("background") or d.get("poster") or None,
-            "description": d.get("description") or "",
-            "genres": d.get("genres") or [],
-            "releaseInfo": d.get("year") or None, "videos": []}
-    if kind == "series":
-        eps = {(e["season"], e["episode"]): e for e in d.get("episodes", [])}
-        have = {k[0] for k in eps}
-        for sn in [x for x in d.get("seasons", []) if x not in have][:12]:
-            for e in awi.season_episodes(slug, d.get("post_id"), sn):
-                eps.setdefault((e["season"], e["episode"]), e)
-        meta["videos"] = [
-            {"id": f"awi:series:{slug}:{s}:{e}", "season": s, "episode": e,
-             "title": v["title"], "name": v["title"],
-             "thumbnail": v.get("thumb") or None}
-            for (s, e), v in sorted(eps.items())]
-    return meta
+    return {"metas": []}
 
 
 def handle_manifest(base):
@@ -1263,20 +1223,16 @@ def handle_manifest(base):
                 else "https://5a16d5684c14-raretoons.baby-beamup.club/logo.png",
         "background": None,
         "types": ["movie", "series"],
-        # v3.5: catalogs added (Recently Updated + AnimeWorld Newest Drops /
-        # Most Watched / genre browse).  Streams still resolve for foreign
-        # tt... ids via Cinemeta, legacy raretoons2: ids and awi: ids (the
-        # AnimeWorld title is matched to the RareToons index).
+        # Streams resolve for foreign tt... ids via Cinemeta, and our own
+        # legacy raretoons2: ids.
         "resources": ["catalog", "stream", "meta"],
-        "idPrefixes": ["raretoons2", "tt", "awi"],
+        "idPrefixes": ["raretoons2", "tt"],
         "catalogs": _catalogs(),
         "behaviorHints": {"configurable": False},
     }
 
 
 def handle_meta(mtype, mid):
-    if mid.startswith("awi:"):
-        return _awi_meta(mtype, mid)
     slug = mid.split(":", 1)[1] if ":" in mid else mid
     rec = SHOWS.get(slug)
     if not rec:
@@ -1319,9 +1275,12 @@ def handle_meta(mtype, mid):
         "name": rec["name"],
         "poster": rec["poster"] or None,
         "background": rec["poster"] or None,
-        "description": (f"{rec['name']} - every language the site "
-                        "carries, streamed in-app as multi-quality HLS."),
-        "genres": ["Animation"],
+        "description": (rec.get("synopsis")
+                        or META_CACHE.get(_base_title(rec["name"]), {}).get("description")
+                        or rec["name"]),
+        "genres": (rec.get("genres")
+                   or META_CACHE.get(_base_title(rec["name"]), {}).get("genres")
+                   or ["Animation"]),
         "videos": [],
     }
     if not rec["movie"]:
@@ -1389,26 +1348,6 @@ def handle_stream(mtype, mid):
                                alt, mtype == "movie") or ""))
                     if rec:
                         break
-    elif mid.startswith("awi:"):
-        parts = mid.split(":")
-        if len(parts) < 3:
-            return {"streams": []}
-        a_kind, a_slug = parts[1], parts[2]
-        try:
-            if len(parts) >= 5:
-                season, episode = int(parts[3]), int(parts[4])
-        except ValueError:
-            pass
-        d = awi.details(a_kind, a_slug)
-        title = (d or {}).get("title") or a_slug.replace("-", " ")
-        rec = (_match_show(title, season, mtype)
-               or _sim_match(title, season, mtype))
-        if not rec:
-            # not in the RareToons index: hand over the site page instead
-            return {"streams": [{
-                "name": "AnimeWorld",
-                "title": f"{title}\nNo in-app stream for this title - open on site",
-                "externalUrl": awi.page_url(a_kind, a_slug)}]}
     else:
         return {"streams": []}
     if not rec:
@@ -1646,55 +1585,39 @@ def api_shows():
     return {"shows": items, "now": int(time.time()), "popular": _popular()}
 
 
-_awi_match_cache = {}
-_awi_match_lock = threading.Lock()
-AWI_MATCH_TTL = 6 * 3600
+_genre_desc_cache = {}
+_genre_desc_lock = threading.Lock()
+GENRE_DESC_TTL = 6 * 3600
 
 
-def api_awi_match(slug):
-    """Genre + description for a LOCAL RareToons show, found by matching its
-    title against AnimeWorld.  Nothing from AnimeWorld is ever played or
-    linked to - this only fills in the two fields our own index lacks."""
+def api_genre_desc(slug):
+    """Genre + description for a LOCAL RareToons show, pulled from its own
+    rareanimes.mov hub page ("Anime Series Info" block).  Own-site data
+    only - no third-party source."""
     with STORE_LOCK:
         rec = SHOWS.get(slug)
     if not rec:
         return {"ok": False}
-    title = (rec.get("name") or "").strip()
-    if not title:
-        return {"ok": False}
 
     now = time.time()
-    with _awi_match_lock:
-        hit = _awi_match_cache.get(slug)
-        if hit and now - hit[0] < AWI_MATCH_TTL:
+    with _genre_desc_lock:
+        hit = _genre_desc_cache.get(slug)
+        if hit and now - hit[0] < GENRE_DESC_TTL:
             return hit[1]
 
-    kind = "movie" if rec.get("movie") else "series"
-    tl = title.lower()
-
-    def _try(k):
+    if not rec.get("genres") or not rec.get("synopsis"):
         try:
-            rows = awi.search(title, k) or []
+            _absorb_live(rec, _live_rows(rec))
         except Exception:
-            rows = []
-        exact = next((r for r in rows
-                      if (r.get("title") or "").strip().lower() == tl), None)
-        cand = exact or (rows[0] if rows else None)
-        if not cand or not cand.get("slug"):
-            return None
-        try:
-            return awi.details(k, cand["slug"])
-        except Exception:
-            return None
+            pass
 
-    d = _try(kind) or _try("movie" if kind == "series" else "series")
-    out = ({"ok": True, "genres": d.get("genres") or [],
-            "description": d.get("description") or ""}
-           if d and d.get("title") else {"ok": False})
-    with _awi_match_lock:
-        if len(_awi_match_cache) > 1000:
-            _awi_match_cache.pop(next(iter(_awi_match_cache)))
-        _awi_match_cache[slug] = (now, out)
+    out = ({"ok": True, "genres": rec.get("genres") or [],
+            "description": rec.get("synopsis") or ""}
+           if rec.get("genres") or rec.get("synopsis") else {"ok": False})
+    with _genre_desc_lock:
+        if len(_genre_desc_cache) > 1000:
+            _genre_desc_cache.pop(next(iter(_genre_desc_cache)))
+        _genre_desc_cache[slug] = (now, out)
     return out
 
 
@@ -2445,9 +2368,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/shows":
                 self._send(api_shows())
                 return
-            m = re.match(r"^/api/awi-match/([a-z0-9_]+)$", path)
+            m = re.match(r"^/api/genre-desc/([a-z0-9_]+)$", path)
             if m:
-                self._send(api_awi_match(m.group(1)))
+                self._send(api_genre_desc(m.group(1)))
                 return
             m = re.match(r"^/api/watch/([a-z0-9_]+)(?:/(\d+)/(\d+))?$", path)
             if m:
@@ -2474,7 +2397,7 @@ class Handler(BaseHTTPRequestHandler):
                                           parse_qs(m.group(3) or "")))
                 return
 
-            m = re.match(r"^/meta/(series|movie)/((?:raretoons2|awi):.+)\.json$",
+            m = re.match(r"^/meta/(series|movie)/(raretoons2:.+)\.json$",
                          path)
             if m:
                 meta = handle_meta(m.group(1), m.group(2))
@@ -2483,7 +2406,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             m = re.match(r"^/stream/(series|movie)/"
-                         r"(raretoons2:[^/]+|awi:[^/]+|tt\d+(?::\d+)*)\.json$", path)
+                         r"(raretoons2:[^/]+|tt\d+(?::\d+)*)\.json$", path)
             if m:
                 self._send(handle_stream(m.group(1), m.group(2)))
                 return
