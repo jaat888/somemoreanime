@@ -1646,6 +1646,35 @@ def api_shows():
     return {"shows": items, "now": int(time.time()), "popular": _popular()}
 
 
+def api_awi_latest():
+    """AnimeWorld 'Newest Drops' for the website home page.  Each card
+    links out to the AnimeWorld page (or, if the title matches a local
+    RareToons show, into our own in-app player)."""
+    try:
+        rows = awi.home().get("newest", []) or []
+    except Exception:
+        rows = []
+    out = []
+    for r in rows[:20]:
+        title = (r.get("title") or "").strip()
+        if not title:
+            continue
+        local = None
+        tl = title.lower()
+        with STORE_LOCK:
+            for s in SHOWS.values():
+                if s["name"].strip().lower() == tl:
+                    local = s["slug"]
+                    break
+        out.append({
+            "title": title,
+            "poster": r.get("poster") or "",
+            "slug": local,                              # set -> plays in-app
+            "url": awi.page_url(r.get("type") or "series", r.get("slug") or ""),
+        })
+    return {"items": out}
+
+
 _img_cache = {}
 
 
@@ -2392,6 +2421,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send({"seen": accounts.get_seen(u["id"], m.group(1)) if u else []})
             if path == "/api/shows":
                 self._send(api_shows())
+                return
+            if path == "/api/awi-latest":
+                self._send(api_awi_latest())
                 return
             m = re.match(r"^/api/watch/([a-z0-9_]+)(?:/(\d+)/(\d+))?$", path)
             if m:

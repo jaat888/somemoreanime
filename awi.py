@@ -14,7 +14,7 @@ import re
 import threading
 import time
 
-BASE = os.environ.get("AWI_BASE", "https://watchanimeworld.net").rstrip("/")
+BASE = os.environ.get("AWI_BASE", "https://watchanimeworld.one").rstrip("/")
 TTL_HOME = int(os.environ.get("AWI_TTL_HOME", "600"))      # home / lists, s
 TTL_PAGE = int(os.environ.get("AWI_TTL_PAGE", "1800"))     # details, s
 

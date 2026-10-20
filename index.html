@@ -134,7 +134,9 @@ function requestModal(){
     h("button",{class:"pri",onclick:()=>{if(!n.value.trim())return;window.open("https://t.me/mollad_jaat?text="+encodeURIComponent("Anime request: "+n.value.trim()+(ME?" (user: "+ME.username+")":"")),"_blank");m.remove()}},"Send on Telegram"));n.focus()}
 
 /* ---------- data ---------- */
-async function loadShows(){if(SHOWS)return;$app.replaceChildren(h("p",{class:"muted"},"Loading…"));const j=await api("/api/shows");SHOWS=j.shows;NOW=j.now||Date.now()/1e3;POP=j.popular||[]}
+let AWI=null;
+async function loadShows(){if(SHOWS)return;$app.replaceChildren(h("p",{class:"muted"},"Loading…"));const j=await api("/api/shows");SHOWS=j.shows;NOW=j.now||Date.now()/1e3;POP=j.popular||[];
+  api("/api/awi-latest").then(r=>{AWI=r.items||[];if(location.hash===""||location.hash==="#/")home()}).catch(()=>{AWI=[]})}
 const bySlug=s=>SHOWS.find(x=>x.slug===s);
 const isNew=s=>s.upd&&NOW-s.upd<7*86400;
 async function getVids(s){if(META[s.slug])return META[s.slug];let v=[];try{const m=await api("/meta/"+(s.movie?"movie":"series")+"/raretoons2:"+encodeURIComponent(s.slug)+".json");v=(m.meta&&m.meta.videos)||[]}catch(e){}return META[s.slug]=v}
@@ -146,6 +148,9 @@ const epLink=s=>s.le?"#/watch/"+s.slug+"/"+s.le[0]+"/"+s.le[1]:"#/show/"+s.slug;
 function epCard(s){const nw=isNew(s);return h("button",{class:"card",onclick:()=>go(epLink(s))},posterEl(s),nw?h("div",{class:"badge"},"NEW"):null,
   s.le?h("div",{class:"ept",style:"margin-top:6px"},"S"+s.le[0]+" · E"+s.le[1],nw?h("span",{}," · "+ago(s.upd)):null):null,h("div",{class:"t",style:"min-height:2.6em"},s.name))}
 const resumeLink=(s,p)=>"#/watch/"+s.slug+(s.movie?"":"/"+p.season+"/"+p.episode);
+function awiCard(it){const f=()=>h("div",{class:"ph"},(it.title[0]||"?").toUpperCase());
+  const img=it.poster?(()=>{const i=h("img",{class:"poster",loading:"lazy",alt:"",referrerpolicy:"no-referrer",src:it.poster});i.onerror=()=>i.replaceWith(f());return i})():f();
+  return h("button",{class:"card",onclick:()=>it.slug?go("#/show/"+it.slug):window.open(it.url,"_blank")},img,h("div",{class:"t"},it.title))}
 const bgStyle=s=>s.poster?"background-image:url('"+s.poster.replace(/'/g,"%27")+"')":"";
 async function toggleFav(slug){if(!ME)return authModal();const on=!FAVS.includes(slug);try{await api("/api/fav",{slug,on});FAVS=on?[slug,...FAVS]:FAVS.filter(x=>x!==slug)}catch(e){}}
 
@@ -175,6 +180,7 @@ function home(){killPlayer();const term=$q.value.trim().toLowerCase(),browsing=t
     if(ME)kids.push(...rail("Continue watching",cont.slice(0,15),null,({p,s})=>card(s,p.dur?Math.min(100,p.pos/p.dur*100):0,()=>go(resumeLink(s,p).slice(1)))));
     if(ME)kids.push(...rail("My List",FAVS.map(bySlug).filter(Boolean).slice(0,20),()=>go("#/list")));
     kids.push(...rail("Recently added",recent.slice(0,20),null,epCard));
+    if(AWI&&AWI.length)kids.push(...rail("AnimeWorld · Latest",AWI,null,awiCard));
     const pop=POP.map(bySlug).filter(Boolean);if(pop.length>=4)kids.push(...rail("Popular on mollad_jaat",pop));
     for(const L of ["Hindi","Tamil","Telugu"]){const l=SHOWS.filter(s=>(s.langs||[]).includes(L)&&!s.movie&&A(s)&&s.poster).sort((a,b)=>b.upd-a.upd||a.name.localeCompare(b.name)).slice(0,20);
       kids.push(...rail(L+" anime",l,()=>{lang=L;filter="anime";shown=60;home()}))}
