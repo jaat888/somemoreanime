@@ -1646,33 +1646,56 @@ def api_shows():
     return {"shows": items, "now": int(time.time()), "popular": _popular()}
 
 
-def api_awi_latest():
-    """AnimeWorld 'Newest Drops' for the website home page.  Each card
-    links out to the AnimeWorld page (or, if the title matches a local
-    RareToons show, into our own in-app player)."""
-    try:
-        rows = awi.home().get("newest", []) or []
-    except Exception:
-        rows = []
-    out = []
-    for r in rows[:20]:
-        title = (r.get("title") or "").strip()
-        if not title:
-            continue
-        local = None
-        tl = title.lower()
-        with STORE_LOCK:
-            for s in SHOWS.values():
-                if s["name"].strip().lower() == tl:
-                    local = s["slug"]
-                    break
-        out.append({
-            "title": title,
-            "poster": r.get("poster") or "",
-            "slug": local,                              # set -> plays in-app
-            "url": awi.page_url(r.get("type") or "series", r.get("slug") or ""),
-        })
-    return {"items": out}
+_awi_match_cache = {}
+_awi_match_lock = threading.Lock()
+AWI_MATCH_TTL = 6 * 3600
+
+
+def api_awi_match(slug):
+    """Genre + description for a LOCAL RareToons show, found by matching its
+    title against AnimeWorld.  Nothing from AnimeWorld is ever played or
+    linked to - this only fills in the two fields our own index lacks."""
+    with STORE_LOCK:
+        rec = SHOWS.get(slug)
+    if not rec:
+        return {"ok": False}
+    title = (rec.get("name") or "").strip()
+    if not title:
+        return {"ok": False}
+
+    now = time.time()
+    with _awi_match_lock:
+        hit = _awi_match_cache.get(slug)
+        if hit and now - hit[0] < AWI_MATCH_TTL:
+            return hit[1]
+
+    kind = "movie" if rec.get("movie") else "series"
+    tl = title.lower()
+
+    def _try(k):
+        try:
+            rows = awi.search(title, k) or []
+        except Exception:
+            rows = []
+        exact = next((r for r in rows
+                      if (r.get("title") or "").strip().lower() == tl), None)
+        cand = exact or (rows[0] if rows else None)
+        if not cand or not cand.get("slug"):
+            return None
+        try:
+            return awi.details(k, cand["slug"])
+        except Exception:
+            return None
+
+    d = _try(kind) or _try("movie" if kind == "series" else "series")
+    out = ({"ok": True, "genres": d.get("genres") or [],
+            "description": d.get("description") or ""}
+           if d and d.get("title") else {"ok": False})
+    with _awi_match_lock:
+        if len(_awi_match_cache) > 1000:
+            _awi_match_cache.pop(next(iter(_awi_match_cache)))
+        _awi_match_cache[slug] = (now, out)
+    return out
 
 
 _img_cache = {}
@@ -2422,8 +2445,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/shows":
                 self._send(api_shows())
                 return
-            if path == "/api/awi-latest":
-                self._send(api_awi_latest())
+            m = re.match(r"^/api/awi-match/([a-z0-9_]+)$", path)
+            if m:
+                self._send(api_awi_match(m.group(1)))
                 return
             m = re.match(r"^/api/watch/([a-z0-9_]+)(?:/(\d+)/(\d+))?$", path)
             if m:
